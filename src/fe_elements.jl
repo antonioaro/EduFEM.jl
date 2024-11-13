@@ -41,3 +41,11 @@ function q0_vec(ε₀, E, A)
     return Q0
 end
 
+# beam element shape function
+function bar_shape_func(x, L)
+    N1 = 1 .- (x ./ L)
+    N2 = (x ./ L)
+    return N1, N2
+end
+
+

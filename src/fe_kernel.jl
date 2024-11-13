@@ -1,5 +1,5 @@
 # solver
-function fem_solver(elements, nodes, type, E, A, I, Qx, Qz, ε₀, dof_d)
+function fem_solver(elements, nodes, type, boundary_condition, nodal_force, element_force)
 
     dof = 3
     nnode = size(nodes, 1)
@@ -7,112 +7,128 @@ function fem_solver(elements, nodes, type, E, A, I, Qx, Qz, ε₀, dof_d)
 
     # displacement and force vector
     u = zeros(ndof)
-    f = zeros(ndof)
 
     # boundary condition
+    dof_d = get_dof_d(nodes, boundary_condition)
     dof_f = filter(x -> x in 1:ndof && !(x in dof_d), 1:ndof)
 
     # ecuación de equilibrio
-    K, Q = stiff_mtrx(ndof, elements, nodes, type, E, A, I, Qx, Qz, ε₀)
+    K, F, Q = get_system(ndof, elements, nodes, type, nodal_force, element_force)
 
     # solution
-    u[dof_f] = K[dof_f, dof_f] \ (f[dof_f] + Q[dof_f])
+    u[dof_f] = K[dof_f, dof_f] \ (F[dof_f] + Q[dof_f])
 
     # reaction force
-    f[dof_d] = K[dof_d, dof_d] * u[dof_d] + K[dof_d, dof_f] * u[dof_f] - Q[dof_d]
+    F[dof_d] = K[dof_d, dof_d] * u[dof_d] + K[dof_d, dof_f] * u[dof_f] - Q[dof_d]
 
     # element force member
-    Fₑ = force_member(elements, nodes, type, E, A, I, ε₀, u)
+    Fₑ = force_member(elements, nodes, type, element_force, u)
 
-    return u, f, Fₑ
+    return u, F, Fₑ
 end
 
 # global stiffness matrix
-function stiff_mtrx(ndof, elements, nodes, type, E, A, I, Qx, Qz, ε₀)
+function get_system(ndof, elements, nodes, type, nodal_force, element_force)
 
-    dof=3
+    dof = 3
+    nelem = length(elements)
 
     K = zeros(ndof, ndof)
+    F = zeros(ndof, 1)
     Q = zeros(ndof, 1)
-
-    nelem = size(elements, 1)
 
     for ielem = 1:nelem
 
-        # element nodes
-        nᵢ = elements[ielem, 1]
-        nⱼ = elements[ielem, 2]
+        # element 
+        n1, n2, itype, el_load = elements[ielem]
+        el_type, A, I, E = type[itype]
 
-        # node coordinates
-        xᵢ = nodes[nᵢ, :]
-        xⱼ = nodes[nⱼ, :]
-
-        # index
-        kᵢ = dof*(nᵢ-1)+1:dof*nᵢ
-        kⱼ = dof*(nⱼ-1)+1:dof*nⱼ
+        # node 
+        x1, y1, bc1, f1 = nodes[n1]
+        x2, y2, bc2, f2 = nodes[n2]
 
         # element length
-        Lₑ = elem_leng(xᵢ[1], xᵢ[2], xⱼ[1], xⱼ[2])
+        leng = elem_leng(x1, y1, x2, y2)
 
         # element angle
-        αₑ = elem_angle(xᵢ[1], xᵢ[2], xⱼ[1], xⱼ[2])
+        αₑ = elem_angle(x1, y1, x2, y2)
         Ld = rotation_mtrx(αₑ)
 
+        # index
+        kᵢ = dof*(n1-1)+1:dof*n1
+        kⱼ = dof*(n2-1)+1:dof*n2
+
         # element matrix
-        if type[ielem] == "bar"
-            Kₑ = bar_mtrx(E[ielem], A[ielem], Lₑ)
-        elseif type[ielem] == "beam"
-            Kₑ = beam_mtrx(E[ielem], A[ielem], I[ielem], Lₑ)
+        if el_type == "bar"
+            Ke = bar_mtrx(E, A, leng)
+        elseif el_type == "beam"
+            Ke = beam_mtrx(E, A, I, leng)
         else
             error("Not valid element")
         end
 
         # assemble
         index = vcat(kᵢ, kⱼ)
-        K[index, index] += Ld * Kₑ * Ld'
+        K[index, index] += Ld * Ke * Ld'
 
-        # element force vector
-        Qₑ = qe_vec(Qx[ielem], Qz[ielem], Lₑ)
-        Q₀ = q0_vec(ε₀[ielem], E[ielem], A[ielem])
-        Q[index] += Ld * (Qₑ + Q₀)
+        # element force vector        
+        if el_load !== 0
+            label, qx, qz, e0 = element_force[el_load]
+
+            Qₑ = qe_vec(qx, qz, leng)
+            Q₀ = q0_vec(e0, E, A)
+            Q[index] += Ld * (Qₑ + Q₀)
+        end
     end
 
-    return K, Q
+    # nodal load
+    nnode = length(nodes)
+    for inode = 1:nnode
+        fnode = Int(nodes[inode][4])
+        if fnode !== 0
+            label, fx, fy, Mz = nodal_force[fnode]
+            idx = dof*(inode-1)+1:dof*inode
+            F[idx] .= [fx, fy, Mz]
+        end
+    end
+
+    return K, F, Q
 end
 
 # element force member
-function force_member(elements, nodes, type, E, A, I, ε₀, u)
+function force_member(elements, nodes, type, element_force, u)
 
     dof = 3
     edof = 6
-    nelem = size(elements, 1)
+    nelem = length(elements)
     Fₑ = zeros(nelem, edof)
 
     for ielem = 1:nelem
-        # element nodes
-        nᵢ = elements[ielem, 1]
-        nⱼ = elements[ielem, 2]
 
-        # node coordinates
-        xᵢ = nodes[nᵢ, :]
-        xⱼ = nodes[nⱼ, :]
+        # element 
+        n1, n2, itype, el_load = elements[ielem]
+        el_type, A, I, E = type[itype]
 
-        # index
-        kᵢ = dof*(nᵢ-1)+1:dof*nᵢ
-        kⱼ = dof*(nⱼ-1)+1:dof*nⱼ
+        # node 
+        x1, y1, bc1, f1 = nodes[n1]
+        x2, y2, bc2, f2 = nodes[n2]
 
         # element length
-        Lₑ = elem_leng(xᵢ[1], xᵢ[2], xⱼ[1], xⱼ[2])
+        leng = elem_leng(x1, y1, x2, y2)
 
         # element angle
-        αₑ = elem_angle(xᵢ[1], xᵢ[2], xⱼ[1], xⱼ[2])
+        αₑ = elem_angle(x1, y1, x2, y2)
         Ld = rotation_mtrx(αₑ)
 
+        # index
+        kᵢ = dof*(n1-1)+1:dof*n1
+        kⱼ = dof*(n2-1)+1:dof*n2
+
         # element matrix
-        if type[ielem] == "bar"
-            Kₑ = bar_mtrx(E[ielem], A[ielem], Lₑ)
-        elseif type[ielem] == "beam"
-            Kₑ = beam_mtrx(E[ielem], A[ielem], I[ielem], Lₑ)
+        if el_type == "bar"
+            Ke = bar_mtrx(E, A, leng)
+        elseif el_type == "beam"
+            Ke = beam_mtrx(E, A, I, leng)
         else
             error("Not valid element")
         end
@@ -122,12 +138,15 @@ function force_member(elements, nodes, type, E, A, I, ε₀, u)
         uₑ = Ld' * u[index]
 
         # element force
-        Fₑ[ielem, :] = Kₑ * uₑ
+        Fₑ[ielem, :] = Ke * uₑ
 
-        if ε₀[ielem] != 0
-            Q₀ = Q0_vec(ε₀[ielem], E[ielem], A[ielem])
-            Fₑ[ielem, :] -= Q₀
-        end
+        # element force vector    
+        # if el_load !== 0
+        #     label, qx, qz, e0 = element_force[el_load]
+
+        #     Q₀ = Q0_vec(e0, E, A)
+        #     Fₑ[ielem, :] -= Q₀
+        # end
     end
     return Fₑ
 end
@@ -153,4 +172,28 @@ function rotation_mtrx(a)
         0 0 0 sin(a) cos(a) 0;
         0 0 0 0 0 1]
     return Ld
+end
+
+# get dof with bc
+function get_dof_d(nodes, boundary_condition)
+    dof = 3
+    dof_d = Vector{Int}()
+    nnodes = length(nodes)
+
+    for inode = 1:nnodes
+        ibc = Int(nodes[inode][3])
+
+        if ibc != 0
+            bc = boundary_condition[ibc]
+
+            for idof = 1:dof
+                if !isnan(bc[idof+1])
+                    index = dof * (inode - 1) + idof
+                    push!(dof_d, index)
+                end
+            end
+        end
+    end
+
+    return dof_d
 end

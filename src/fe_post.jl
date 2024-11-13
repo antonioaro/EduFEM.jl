@@ -1,8 +1,8 @@
 # post
-function postprocess(elements, nodes, u, Fₑ)
+function postprocess(elements, nodes, type, u, Fₑ)
 
     dof = 3
-    nelem = size(elements, 1)
+    nelem = length(elements)
 
     # nodal
     w0_ = Float64[]
@@ -16,19 +16,19 @@ function postprocess(elements, nodes, u, Fₑ)
 
     for ielem = 1:nelem
 
-        # element nodes
-        nᵢ = elements[ielem, 1]
-        nⱼ = elements[ielem, 2]
+        # element 
+        n1, n2, itype, el_load = elements[ielem]
+        el_type, A, I, E = type[itype]
 
-        # node coordinates
-        xᵢ = nodes[nᵢ, :]
-        xⱼ = nodes[nⱼ, :]
+        # node 
+        x1, y1, bc1, f1 = nodes[n1]
+        x2, y2, bc2, f2 = nodes[n2]
 
-        push!(x0_, xᵢ[1], xⱼ[1])
+        push!(x0_, x1, x2)
 
         # index
-        kᵢ = dof*(nᵢ-1)+1:dof*nᵢ
-        kⱼ = dof*(nⱼ-1)+1:dof*nⱼ
+        kᵢ = dof*(n1-1)+1:dof*n1
+        kⱼ = dof*(n2-1)+1:dof*n2
 
         # nodal displacement
         uᵢ = u[kᵢ]
@@ -37,13 +37,13 @@ function postprocess(elements, nodes, u, Fₑ)
         push!(w0_, uᵢ[2], uⱼ[2])
 
         # interp
-        xx, ww = interp_disp(xᵢ, xⱼ, uᵢ, uⱼ)
+        xx, ww = interp_disp(x1, y1, x2, y2, uᵢ, uⱼ)
 
         append!(x1_, xx)
         append!(w1_, ww)
 
         # element force
-        push!(M0_, Fₑ[ielem, 3], -Fₑ[ielem, 6])
+        push!(M0_, -Fₑ[ielem, 3], Fₑ[ielem, 6])
         push!(V0_, -Fₑ[ielem, 2], Fₑ[ielem, 5])
     end
 
@@ -51,10 +51,10 @@ function postprocess(elements, nodes, u, Fₑ)
 end
 
 # beam displacement interpolation
-function interp_disp(nodeᵢ, nodeⱼ, uᵢ, uⱼ)
+function interp_disp(x1, y1, x2, y2, uᵢ, uⱼ)
 
     # element length
-    L = elem_leng(nodeᵢ[1], nodeᵢ[2], nodeⱼ[1], nodeⱼ[2])
+    L = elem_leng(x1, y1, x2, y2)
 
     dx = 1e-2
     x = collect(0.0:dx:L)
@@ -65,7 +65,7 @@ function interp_disp(nodeᵢ, nodeⱼ, uᵢ, uⱼ)
     # displacement
     w = uᵢ[2] .* N1 + uᵢ[3] .* N2 + uⱼ[2] .* N3 + uⱼ[3] .* N4
 
-    x .+= nodeᵢ[1]
+    x .+= x1
     return x, w
 end
 
@@ -76,4 +76,11 @@ function shape_func(x, L)
     N3 = 3 .* (x ./ L) .^ 2 .- 2 .* (x ./ L) .^ 3
     N4 = L .* (-(x ./ L) .^ 2 .+ (x ./ L) .^ 3)
     return N1, N2, N3, N4
+end
+
+# beam element shape function
+function bar_shape_func(x, L)
+    N1 = 1 .- (x ./ L) 
+    N2 = (x ./ L )
+    return N1, N2
 end
